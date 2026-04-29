@@ -1,7 +1,11 @@
 chunks-per-tick: 1
 restore-blocks-per-tick: 64
-chunk-process-delay-ticks: 80
+chunk-process-delay-ticks: 20 #80
 max-pending-chunks-per-tick: 8
+max-block-checks-per-tick: 12000 #3000
+process-new-chunks-on-load: false
+player-scan-radius-chunks: 2
+player-scan-interval-ticks: 20
 progress-message-interval-ticks: 100
 max-queue-size: 2000
 low-tps-threshold: 18.0

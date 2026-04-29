@@ -48,7 +48,9 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
     private File stateFile;
     private boolean saveQueued;
     private BukkitTask chunkProcessorTask;
+    private BukkitTask playerScanTask;
     private BukkitTask activeJob;
+    private ProcessingChunk activeProcessingChunk;
     private String activeJobDescription;
     private long schedulerTick;
 
@@ -56,7 +58,11 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
     private int restoreBlocksPerTick;
     private int chunkProcessDelayTicks;
     private int maxPendingChunksPerTick;
+    private int maxBlockChecksPerTick;
     private int progressMessageIntervalTicks;
+    private boolean processNewChunksOnLoad;
+    private int playerScanRadiusChunks;
+    private int playerScanIntervalTicks;
     private int maxQueueSize;
     private double lowTpsThreshold;
     private int minChunksPerTickUnderLoad;
@@ -73,7 +79,8 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         stateFile = new File(getDataFolder(), "ore-state.yml");
         loadState();
         Bukkit.getPluginManager().registerEvents(this, this);
-        enqueueLoadedChunksForDisabledOres();
+        startPlayerScanTask();
+        enqueueChunksAroundPlayersForDisabledOres(1L);
         ensureChunkProcessorRunning();
     }
 
@@ -83,17 +90,26 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
             chunkProcessorTask.cancel();
             chunkProcessorTask = null;
         }
+        if (playerScanTask != null) {
+            playerScanTask.cancel();
+            playerScanTask = null;
+        }
         if (activeJob != null) {
             activeJob.cancel();
             activeJob = null;
             activeJobDescription = null;
         }
+        activeProcessingChunk = null;
         flushStateSync();
     }
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
         recentChunkLoads.addLast(System.currentTimeMillis());
+
+        if (!processNewChunksOnLoad) {
+            return;
+        }
 
         boolean queued = false;
         for (Map.Entry<String, OreRuntimeState> entry : oreRuntimeStates.entrySet()) {
@@ -169,12 +185,12 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         }
 
         oreRuntimeStates.put(definition.key(), OreRuntimeState.DISABLED);
-        int queued = enqueueLoadedChunksForOre(definition.key(), 1L);
+        int queued = enqueueChunksAroundPlayersForOre(definition.key(), 1L);
         ensureChunkProcessorRunning();
         persistState();
         sender.sendMessage(
-                definition.displayName() + " is now disabled. Queued " + queued + " loaded chunks. "
-                        + "New chunks will be processed lazily after a delay."
+                definition.displayName() + " is now disabled. Queued " + queued + " nearby chunks around players. "
+                        + "New chunks will be processed lazily."
         );
         return true;
     }
@@ -216,31 +232,70 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         restoreBlocksPerTick = Math.max(1, config.getInt("restore-blocks-per-tick", 64));
         chunkProcessDelayTicks = Math.max(1, config.getInt("chunk-process-delay-ticks", 80));
         maxPendingChunksPerTick = Math.max(chunksPerTick, config.getInt("max-pending-chunks-per-tick", 8));
+        maxBlockChecksPerTick = Math.max(256, config.getInt("max-block-checks-per-tick", 3000));
         progressMessageIntervalTicks = Math.max(20, config.getInt("progress-message-interval-ticks", 100));
+        processNewChunksOnLoad = config.getBoolean("process-new-chunks-on-load", false);
+        playerScanRadiusChunks = Math.max(0, config.getInt("player-scan-radius-chunks", 2));
+        playerScanIntervalTicks = Math.max(1, config.getInt("player-scan-interval-ticks", 20));
         maxQueueSize = Math.max(1, config.getInt("max-queue-size", 2000));
         lowTpsThreshold = config.getDouble("low-tps-threshold", LOW_TPS_THRESHOLD);
         minChunksPerTickUnderLoad = Math.max(1, config.getInt("min-chunks-per-tick-under-load", 1));
     }
 
-    private void enqueueLoadedChunksForDisabledOres() {
+    private void enqueueChunksAroundPlayersForDisabledOres(long delayTicks) {
         for (Map.Entry<String, OreRuntimeState> entry : oreRuntimeStates.entrySet()) {
             if (entry.getValue() == OreRuntimeState.DISABLED) {
-                enqueueLoadedChunksForOre(entry.getKey(), 1L);
+                enqueueChunksAroundPlayersForOre(entry.getKey(), delayTicks);
             }
         }
     }
 
-    private int enqueueLoadedChunksForOre(String oreKey, long delayTicks) {
+    private int enqueueChunksAroundPlayersForOre(String oreKey, long delayTicks) {
         int queued = 0;
         long readyTick = schedulerTick + Math.max(1L, delayTicks);
-        for (World world : Bukkit.getWorlds()) {
-            for (Chunk chunk : world.getLoadedChunks()) {
-                if (enqueueChunkForOre(oreKey, chunk, readyTick)) {
-                    queued++;
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            Chunk centerChunk = player.getChunk();
+            World world = centerChunk.getWorld();
+            int centerX = centerChunk.getX();
+            int centerZ = centerChunk.getZ();
+
+            for (int chunkX = centerX - playerScanRadiusChunks; chunkX <= centerX + playerScanRadiusChunks; chunkX++) {
+                for (int chunkZ = centerZ - playerScanRadiusChunks; chunkZ <= centerZ + playerScanRadiusChunks; chunkZ++) {
+                    if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                        continue;
+                    }
+
+                    Chunk chunk = world.getChunkAt(chunkX, chunkZ);
+                    if (enqueueChunkForOre(oreKey, chunk, readyTick)) {
+                        queued++;
+                    }
                 }
             }
         }
         return queued;
+    }
+
+    private void startPlayerScanTask() {
+        if (playerScanTask != null && !playerScanTask.isCancelled()) {
+            playerScanTask.cancel();
+        }
+
+        playerScanTask = Bukkit.getScheduler().runTaskTimer(this, this::scanChunksAroundPlayers, playerScanIntervalTicks, playerScanIntervalTicks);
+    }
+
+    private void scanChunksAroundPlayers() {
+        boolean queued = false;
+        for (Map.Entry<String, OreRuntimeState> entry : oreRuntimeStates.entrySet()) {
+            if (entry.getValue() != OreRuntimeState.DISABLED) {
+                continue;
+            }
+
+            queued |= enqueueChunksAroundPlayersForOre(entry.getKey(), 1L) > 0;
+        }
+
+        if (queued) {
+            ensureChunkProcessorRunning();
+        }
     }
 
     private boolean enqueueChunkForOre(String oreKey, Chunk chunk, long readyTick) {
@@ -268,6 +323,9 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
     private void removePendingChunksForOre(String oreKey) {
         pendingChunks.removeIf(pending -> pending.oreKey().equals(oreKey));
         queuedChunks.remove(oreKey);
+        if (activeProcessingChunk != null && activeProcessingChunk.oreKey().equals(oreKey)) {
+            activeProcessingChunk = null;
+        }
         if (pendingChunks.size() < maxQueueSize) {
             queueCapWarningLogged = false;
         }
@@ -302,7 +360,9 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         schedulerTick++;
         trimRecentChunkLoads();
 
-        if (pendingChunks.isEmpty()) {
+        // Keep the processor alive while an incremental chunk scan is in progress,
+        // even if the pending queue is temporarily empty.
+        if (pendingChunks.isEmpty() && activeProcessingChunk == null) {
             if (chunkProcessorTask != null) {
                 chunkProcessorTask.cancel();
                 chunkProcessorTask = null;
@@ -332,45 +392,106 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         int examined = 0;
         int processedCount = 0;
         boolean persistNeeded = false;
+        int blockChecks = 0;
+        int removedThisTick = 0;
 
-        while (examined < maxPendingChunksPerTick && processedCount < allowedChunksThisTick && !pendingChunks.isEmpty()) {
-            PendingChunk pending = pendingChunks.pollFirst();
-            if (pending == null) {
-                break;
+        while (blockChecks < maxBlockChecksPerTick && processedCount < allowedChunksThisTick) {
+            if (activeProcessingChunk == null) {
+                PendingChunk pending = nextPendingChunk();
+                if (pending == null) {
+                    break;
+                }
+
+                examined++;
+                OreDefinition definition = oreDefinitions.get(pending.oreKey());
+                if (definition == null) {
+                    queuedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).remove(pending.processedKey());
+                    continue;
+                }
+
+                World world = Bukkit.getWorld(pending.worldName());
+                if (world == null || !world.isChunkLoaded(pending.chunkX(), pending.chunkZ())) {
+                    queuedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).remove(pending.processedKey());
+                    continue;
+                }
+
+                activeProcessingChunk = new ProcessingChunk(
+                        pending.oreKey(),
+                        pending.worldName(),
+                        pending.chunkX(),
+                        pending.chunkZ(),
+                        definition,
+                        0,
+                        world.getMinHeight(),
+                        0,
+                        0
+                );
+                getLogger().info("Started incremental ore scan for " + activeProcessingChunk.processedKey());
             }
 
-            examined++;
+            ChunkScanResult result = continueChunkScan(activeProcessingChunk, maxBlockChecksPerTick - blockChecks);
+            blockChecks += result.blockChecks();
+            removedThisTick += result.removedThisTick();
+
+            if (result.finished()) {
+                queuedChunks.computeIfAbsent(activeProcessingChunk.oreKey(), key -> new HashSet<>())
+                        .remove(activeProcessingChunk.processedKey());
+
+                if (result.completed()) {
+                    processedChunks.computeIfAbsent(activeProcessingChunk.oreKey(), key -> new HashSet<>())
+                            .add(activeProcessingChunk.processedKey());
+                    persistNeeded = true;
+                    processedCount++;
+                    getLogger().info("Finished incremental ore scan for " + activeProcessingChunk.processedKey()
+                            + " after removing " + activeProcessingChunk.removedCount() + " blocks.");
+                } else {
+                    getLogger().info("Aborted incremental ore scan for " + activeProcessingChunk.processedKey()
+                            + " because the world or chunk is no longer loaded.");
+                }
+
+                activeProcessingChunk = null;
+            } else {
+                break;
+            }
+        }
+
+        if (blockChecks > 0) {
+            getLogger().info("Incremental ore scan tick: checks=" + blockChecks + ", removed=" + removedThisTick
+                    + ", active=" + (activeProcessingChunk != null) + ", pending=" + pendingChunks.size());
+        }
+
+        if (persistNeeded) {
+            persistState();
+        }
+    }
+
+    private PendingChunk nextPendingChunk() {
+        int attempts = Math.min(maxPendingChunksPerTick, pendingChunks.size());
+        for (int i = 0; i < attempts; i++) {
+            PendingChunk pending = pendingChunks.pollFirst();
+            if (pending == null) {
+                return null;
+            }
 
             if (pending.readyTick() > schedulerTick) {
                 pendingChunks.addLast(pending);
                 continue;
             }
 
-            queuedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).remove(pending.processedKey());
-
             if (oreRuntimeStates.getOrDefault(pending.oreKey(), OreRuntimeState.ENABLED) != OreRuntimeState.DISABLED) {
+                queuedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).remove(pending.processedKey());
                 continue;
             }
 
-            World world = Bukkit.getWorld(pending.worldName());
-            if (world == null || !world.isChunkLoaded(pending.chunkX(), pending.chunkZ())) {
+            if (processedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).contains(pending.processedKey())) {
+                queuedChunks.computeIfAbsent(pending.oreKey(), key -> new HashSet<>()).remove(pending.processedKey());
                 continue;
             }
 
-            OreDefinition definition = oreDefinitions.get(pending.oreKey());
-            if (definition == null) {
-                continue;
-            }
-
-            Chunk chunk = world.getChunkAt(pending.chunkX(), pending.chunkZ());
-            processChunkForOre(chunk, definition);
-            persistNeeded = true;
-            processedCount++;
+            return pending;
         }
 
-        if (persistNeeded) {
-            persistState();
-        }
+        return null;
     }
 
     private boolean isServerUnderLoad() {
@@ -403,33 +524,44 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         return null;
     }
 
-    private int processChunkForOre(Chunk chunk, OreDefinition definition) {
-        String processedKey = processedKey(definition.key(), chunk.getWorld().getName(), chunk.getX(), chunk.getZ());
-        Set<String> processedForOre = processedChunks.computeIfAbsent(definition.key(), key -> new HashSet<>());
-        if (!processedForOre.add(processedKey)) {
-            return 0;
+    private ChunkScanResult continueChunkScan(ProcessingChunk processingChunk, int budget) {
+        World world = Bukkit.getWorld(processingChunk.worldName());
+        if (world == null || !world.isChunkLoaded(processingChunk.chunkX(), processingChunk.chunkZ())) {
+            return new ChunkScanResult(0, 0, true, false);
         }
 
-        int removed = 0;
-        int minY = chunk.getWorld().getMinHeight();
-        int maxY = chunk.getWorld().getMaxHeight();
+        Chunk chunk = world.getChunkAt(processingChunk.chunkX(), processingChunk.chunkZ());
+        int minY = world.getMinHeight();
+        int maxY = world.getMaxHeight();
+        int checks = 0;
+        int removedThisTick = 0;
 
-        for (int x = 0; x < 16; x++) {
-            for (int z = 0; z < 16; z++) {
-                for (int y = minY; y < maxY; y++) {
-                    Block block = chunk.getBlock(x, y, z);
-                    if (!definition.matches(block.getType())) {
-                        continue;
+        while (checks < budget) {
+            Block block = chunk.getBlock(processingChunk.x(), processingChunk.y(), processingChunk.z());
+            if (processingChunk.definition().matches(block.getType())) {
+                rememberRemovedBlock(processingChunk.oreKey(), processingChunk.worldName(), block);
+                block.setType(replacementFor(block.getType()), false);
+                processingChunk.removedCount(processingChunk.removedCount() + 1);
+                removedThisTick++;
+            }
+
+            checks++;
+
+            processingChunk.y(processingChunk.y() + 1);
+            if (processingChunk.y() >= maxY) {
+                processingChunk.y(minY);
+                processingChunk.z(processingChunk.z() + 1);
+                if (processingChunk.z() >= 16) {
+                    processingChunk.z(0);
+                    processingChunk.x(processingChunk.x() + 1);
+                    if (processingChunk.x() >= 16) {
+                        return new ChunkScanResult(checks, removedThisTick, true, true);
                     }
-
-                    rememberRemovedBlock(definition.key(), chunk.getWorld().getName(), block);
-                    block.setType(replacementFor(block.getType()), false);
-                    removed++;
                 }
             }
         }
 
-        return removed;
+        return new ChunkScanResult(checks, removedThisTick, false, false);
     }
 
     private void startRestoreJob(CommandSender sender, OreDefinition definition, Deque<RestoreTarget> queue) {
@@ -717,6 +849,9 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         }
     }
 
+    private record ChunkScanResult(int blockChecks, int removedThisTick, boolean finished, boolean completed) {
+    }
+
     private record SavedBlock(int x, int y, int z, Material material) {
         static String serialize(Block block) {
             return block.getX() + "," + block.getY() + "," + block.getZ() + "," + block.getType().name();
@@ -748,5 +883,85 @@ public final class OreTogglePlugin extends JavaPlugin implements Listener {
         ENABLED,
         DISABLED,
         RESTORING
+    }
+
+    private static final class ProcessingChunk {
+        private final String oreKey;
+        private final String worldName;
+        private final int chunkX;
+        private final int chunkZ;
+        private final OreDefinition definition;
+        private int x;
+        private int y;
+        private int z;
+        private int removedCount;
+
+        private ProcessingChunk(String oreKey, String worldName, int chunkX, int chunkZ, OreDefinition definition, int x, int y, int z, int removedCount) {
+            this.oreKey = oreKey;
+            this.worldName = worldName;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+            this.definition = definition;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.removedCount = removedCount;
+        }
+
+        private String oreKey() {
+            return oreKey;
+        }
+
+        private String worldName() {
+            return worldName;
+        }
+
+        private int chunkX() {
+            return chunkX;
+        }
+
+        private int chunkZ() {
+            return chunkZ;
+        }
+
+        private OreDefinition definition() {
+            return definition;
+        }
+
+        private int x() {
+            return x;
+        }
+
+        private void x(int x) {
+            this.x = x;
+        }
+
+        private int y() {
+            return y;
+        }
+
+        private void y(int y) {
+            this.y = y;
+        }
+
+        private int z() {
+            return z;
+        }
+
+        private void z(int z) {
+            this.z = z;
+        }
+
+        private int removedCount() {
+            return removedCount;
+        }
+
+        private void removedCount(int removedCount) {
+            this.removedCount = removedCount;
+        }
+
+        private String processedKey() {
+            return worldName + ":" + chunkX + ":" + chunkZ + ":" + oreKey;
+        }
     }
 }
