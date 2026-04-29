@@ -1,0 +1,18 @@
+name: OreToggle
+version: 1.0.0
+main: org.example.OreTogglePlugin
+api-version: "1.21"
+commands:
+  toggleore:
+    description: Enable or disable ore generation by removing matching ore blocks from chunks.
+    usage: /toggleore <ore> <on|off>
+    aliases: [oretoggle]
+    permission: oretoggle.manage
+  restoreore:
+    description: Restore removed ore blocks from saved coordinates.
+    usage: /restoreore <ore>
+    permission: oretoggle.manage
+permissions:
+  oretoggle.manage:
+    description: Allows managing ore toggles and restoration.
+    default: op

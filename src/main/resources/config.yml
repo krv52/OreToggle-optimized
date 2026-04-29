@@ -1,0 +1,8 @@
+chunks-per-tick: 1
+restore-blocks-per-tick: 64
+chunk-process-delay-ticks: 80
+max-pending-chunks-per-tick: 8
+progress-message-interval-ticks: 100
+max-queue-size: 2000
+low-tps-threshold: 18.0
+min-chunks-per-tick-under-load: 1
