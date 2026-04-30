@@ -1,6 +1,15 @@
 # OreToggle
 
 Paper plugin for toggling configured ore types by gradually replacing matching ore blocks in loaded chunks near online players, then restoring the exact saved block materials later.
+Current version: v2.0.0-beta
+
+## Features:
+- Player-based loaded chunk scanning
+- In-memory cache
+- Persistent restore after restart
+- Distance-based chunk priority
+- TPS-aware processing budgets
+- Autosave and debug logging
 
 ## Commands
 
