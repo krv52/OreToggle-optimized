@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 import java.util.Map;
 import java.util.Set;

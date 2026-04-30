@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 import java.util.Comparator;
 import java.util.ArrayList;

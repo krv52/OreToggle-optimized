@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 import org.bukkit.Bukkit;
 import org.bukkit.World;

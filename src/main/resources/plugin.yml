@@ -1,6 +1,6 @@
 name: OreToggle
 version: 2.0.0-beta
-main: org.example.OreTogglePlugin
+main: me.krv.oretoggle.OreTogglePlugin
 api-version: "1.21"
 commands:
   toggleore:

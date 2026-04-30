@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 final class ProcessingChunk {
     private final String oreKey;

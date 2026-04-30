@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 record ChunkRef(String worldName, int x, int z) {
     ChunkCoord coord() {

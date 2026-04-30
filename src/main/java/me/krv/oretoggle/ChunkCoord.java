@@ -1,4 +1,4 @@
-package org.example;
+package me.krv.oretoggle;
 
 record ChunkCoord(int x, int z) {
     static ChunkCoord fromBlock(int blockX, int blockZ) {
