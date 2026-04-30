@@ -30,3 +30,16 @@ The command names, alias, permission, and state file format remain compatible wi
 - `debug`: enables additional structured progress logs.
 
 Ore removal state is cached in memory at runtime and saved to `ore-state.yml` on autosave and plugin shutdown.
+
+## Build
+
+```bash
+mvn package
+```
+
+The compiled plugin jar will be in `target/`.
+
+## Requirements
+
+- Java 21
+- Paper 1.21+
