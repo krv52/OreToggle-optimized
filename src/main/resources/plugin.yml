@@ -1,5 +1,5 @@
 name: OreToggle
-version: 2.0.0
+version: 2.0.0-beta
 main: org.example.OreTogglePlugin
 api-version: "1.21"
 commands:
