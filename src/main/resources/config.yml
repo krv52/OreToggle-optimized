@@ -1,12 +1,13 @@
-chunks-per-tick: 1
-restore-blocks-per-tick: 64
-chunk-process-delay-ticks: 20 #80
+chunks-per-tick: 2
+restore-blocks-per-tick: 1000
+chunk-process-delay-ticks: 20
 max-pending-chunks-per-tick: 8
-max-block-checks-per-tick: 12000 #3000
-process-new-chunks-on-load: false
-player-scan-radius-chunks: 2
-player-scan-interval-ticks: 20
+max-block-checks-per-tick: 8000
+player-scan-radius-chunks: 5
+player-scan-interval-ticks: 60
 progress-message-interval-ticks: 100
 max-queue-size: 2000
-low-tps-threshold: 18.0
+low-tps-threshold: 16.0
 min-chunks-per-tick-under-load: 1
+autosave-interval: 300
+debug: false
